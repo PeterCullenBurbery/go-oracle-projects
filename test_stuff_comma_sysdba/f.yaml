@@ -1,6 +1,0 @@
-oracle_connection:
-  username: sys
-  password: f
-  host: 10.8.183.17
-  port: 1521
-  service_name: pdb_general_2025_06_13_10_15

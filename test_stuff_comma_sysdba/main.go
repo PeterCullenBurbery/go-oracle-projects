@@ -36,7 +36,7 @@ func load_config(path string) (*config, error) {
 }
 
 func main() {
-	cfg, err := load_config("f.yaml")
+	cfg, err := load_config("sysdba.yaml")
 	if err != nil {
 		log.Fatalf("❌ Failed to load config: %v", err)
 	}
