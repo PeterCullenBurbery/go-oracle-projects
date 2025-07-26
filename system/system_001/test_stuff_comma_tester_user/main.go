@@ -55,17 +55,20 @@ func main() {
 
 	ctx := context.Background()
 
-	var dbname string
-	err = db.QueryRowContext(ctx, "SELECT name FROM v$database").Scan(&dbname)
+	var result string
+	err = db.QueryRowContext(ctx, `
+        SELECT 
+            TO_CHAR(num1) || ' × ' || TO_CHAR(num2) || ' = ' || TO_CHAR(num1 * num2) AS result
+        FROM (
+            SELECT 
+                TRUNC(DBMS_RANDOM.VALUE(1000000, 1000000000)) AS num1,
+                TRUNC(DBMS_RANDOM.VALUE(1000000, 1000000000)) AS num2
+            FROM dual
+        )
+    `).Scan(&result)
 	if err != nil {
 		log.Fatalf("❌ Query failed: %v", err)
 	}
-	fmt.Printf("✅ Database name: %s\n", dbname)
 
-	var sysdate string
-	err = db.QueryRowContext(ctx, "SELECT TO_CHAR(SYSDATE, 'YYYY-MM-DD HH24:MI:SS') FROM dual").Scan(&sysdate)
-	if err != nil {
-		log.Fatalf("❌ Query failed: %v", err)
-	}
-	fmt.Printf("📅 SYSDATE: %s\n", sysdate)
+	fmt.Printf("🎲 Random multiplication: %s\n", result)
 }
