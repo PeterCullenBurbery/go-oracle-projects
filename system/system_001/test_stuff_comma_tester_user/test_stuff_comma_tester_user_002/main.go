@@ -64,21 +64,16 @@ func main() {
 
 	ctx := context.Background()
 
-	// Query Oracle with values
-	var product string
-	query := `
-        SELECT TO_CHAR(:1 * :2) FROM dual
-    `
-	err = db.QueryRowContext(ctx, query, randomint1, randomint2).Scan(&product)
+	var result string
+	query := `SELECT TO_CHAR(:1 * :2) FROM dual`
+	err = db.QueryRowContext(ctx, query, randomint1, randomint2).Scan(&result)
 	if err != nil {
 		log.Fatalf("❌ Query failed: %v", err)
 	}
 
-	// Print everything
-	fmt.Printf("randomint1 = %d\n", randomint1)
-	fmt.Printf("randomint2 = %d\n", randomint2)
-	fmt.Println("\nSELECT")
+	// Output exactly as requested
+	fmt.Println("SELECT")
 	fmt.Printf("  %d * %d AS product\n", randomint1, randomint2)
-	fmt.Println("FROM dual;")
-	fmt.Printf("\n🎲 Result: %s\n", product)
+	fmt.Println("FROM dual;\n")
+	fmt.Printf("🎲 Result: %s\n", result)
 }
