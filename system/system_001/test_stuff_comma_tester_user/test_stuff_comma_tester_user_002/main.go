@@ -38,8 +38,9 @@ func load_config(path string) (*config, error) {
 }
 
 func main() {
-	// Generate random integers
 	rand.Seed(time.Now().UnixNano())
+
+	// Generate random numbers
 	lower := 1_000_000
 	upper := 999_999_999
 	randomint1 := rand.Intn(upper-lower+1) + lower
@@ -71,7 +72,8 @@ func main() {
 		log.Fatalf("❌ Query failed: %v", err)
 	}
 
-	// Output exactly as requested
+	// Add a newline before SELECT
+	fmt.Println()
 	fmt.Println("SELECT")
 	fmt.Printf("  %d * %d AS product\n", randomint1, randomint2)
 	fmt.Println("FROM dual;\n")
