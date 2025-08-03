@@ -44,6 +44,7 @@ func loadConfig(path string) (*config, error) {
 }
 
 func normalizeWindowsDir(p string) string {
+	// Normalize separators to backslash and ensure trailing backslash
 	p = strings.ReplaceAll(p, "/", `\`)
 	if !strings.HasSuffix(p, `\`) {
 		p += `\`
@@ -52,7 +53,7 @@ func normalizeWindowsDir(p string) string {
 }
 
 func normalizeForCompare(p string) string {
-	// Normalize for case-insensitive compare on Windows and ensure trailing backslash
+	// Normalize separators and case (Windows is case-insensitive), ensure trailing backslash
 	p = strings.ReplaceAll(p, "/", `\`)
 	if !strings.HasSuffix(p, `\`) {
 		p += `\`
@@ -91,8 +92,17 @@ func main() {
 
 	ctx := context.Background()
 
-	// --- Double method: verify expected vs actual PDBSEED first (no fallback) ---
+	// --- Safety check: ensure we are in CDB$ROOT ---
+	var conName string
+	if err := db.QueryRowContext(ctx, "SELECT SYS_CONTEXT('USERENV','CON_NAME') FROM dual").Scan(&conName); err != nil {
+		log.Fatalf("❌ Unable to determine current container: %v", err)
+	}
+	if !strings.EqualFold(conName, "CDB$ROOT") {
+		log.Fatalf("❌ Not connected to CDB$ROOT (current: %s). Connect to root first.", conName)
+	}
+	fmt.Println("✓ Connected to container:", conName)
 
+	// --- Double method: verify expected vs actual PDBSEED first (no fallback) ---
 	rootQ := `
 SELECT DISTINCT
        SUBSTR(name, 1, REGEXP_INSTR(name, 'SYSTEM01\.DBF', 1, 1, 0, 'i') - 1)
@@ -152,13 +162,21 @@ WHERE  REGEXP_LIKE(name, '[\\/]{1}PDBSEED[\\/]{1}SYSTEM01\.DBF', 'i')
 
 	fmt.Println("✅ Match: expected PDBSEED path equals actual PDBSEED path.")
 
-	// --- Create the PDB only after successful verification ---
-
-	// Generate PDB name
+	// --- Generate PDB name and ensure it does not already exist ---
 	pdbName, err := date_time_functions.Generate_pdb_name_from_timestamp()
 	if err != nil {
 		log.Fatalf("❌ Failed to generate PDB name: %v", err)
 	}
+
+	var exists int
+	checkSQL := fmt.Sprintf("SELECT COUNT(*) FROM DBA_PDBS WHERE PDB_NAME = UPPER('%s')", pdbName)
+	if err := db.QueryRowContext(ctx, checkSQL).Scan(&exists); err != nil {
+		log.Fatalf("❌ Failed to check for existing PDB: %v", err)
+	}
+	if exists > 0 {
+		log.Fatalf("❌ PDB %s already exists. Aborting.", pdbName)
+	}
+	fmt.Println("✓ PDB name available:", pdbName)
 
 	// Destination dir for the new PDB
 	destDir := normalizeWindowsDir(rootDir + pdbName + `\`)
@@ -185,4 +203,28 @@ WHERE  REGEXP_LIKE(name, '[\\/]{1}PDBSEED[\\/]{1}SYSTEM01\.DBF', 'i')
 	fmt.Println("   PDB Name:  ", pdbName)
 	fmt.Println("   Seed From: ", expectedSeed)
 	fmt.Println("   Files To:  ", destDir)
+
+	// --- Post-create: OPEN READ WRITE, SAVE STATE, verify ---
+	post := []string{
+		fmt.Sprintf("ALTER PLUGGABLE DATABASE %s OPEN READ WRITE", pdbName),
+		fmt.Sprintf("ALTER PLUGGABLE DATABASE %s SAVE STATE", pdbName),
+		fmt.Sprintf("SELECT NAME, OPEN_MODE FROM V$PDBS WHERE NAME = UPPER('%s')", pdbName),
+	}
+	for _, sqlText := range post {
+		if strings.HasPrefix(sqlText, "SELECT ") {
+			row := db.QueryRowContext(ctx, sqlText)
+			var name, openMode string
+			if err := row.Scan(&name, &openMode); err == nil {
+				fmt.Println("🔎 PDB status:", name, openMode)
+			} else {
+				fmt.Println("ℹ️ Verification query returned no row or error:", err)
+			}
+			continue
+		}
+		if _, err := db.ExecContext(ctx, sqlText); err != nil {
+			fmt.Println("⚠️ Post-create step failed:", sqlText, "->", err)
+		} else {
+			fmt.Println("✓ Executed:", sqlText)
+		}
+	}
 }
