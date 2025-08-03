@@ -51,6 +51,27 @@ func normalizeWindowsDir(p string) string {
 	return p
 }
 
+func normalizeForCompare(p string) string {
+	// Normalize for case-insensitive compare on Windows and ensure trailing backslash
+	p = strings.ReplaceAll(p, "/", `\`)
+	if !strings.HasSuffix(p, `\`) {
+		p += `\`
+	}
+	return strings.ToUpper(p)
+}
+
+func queryOne(db *sql.DB, ctx context.Context, q string, dest *string) (bool, error) {
+	row := db.QueryRowContext(ctx, q)
+	err := row.Scan(dest)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func main() {
 	// Load config
 	cfg, err := loadConfig(configPath)
@@ -70,7 +91,8 @@ func main() {
 
 	ctx := context.Background()
 
-	// Root directory from V$DATAFILE (no fallback)
+	// --- Double method: verify expected vs actual PDBSEED first (no fallback) ---
+
 	rootQ := `
 SELECT DISTINCT
        SUBSTR(name, 1, REGEXP_INSTR(name, 'SYSTEM01\.DBF', 1, 1, 0, 'i') - 1)
@@ -78,22 +100,61 @@ FROM   v$datafile
 WHERE  REGEXP_LIKE(name, 'SYSTEM01\.DBF', 'i')
   AND  NOT REGEXP_LIKE(name, '[\\/]{1}PDB[^\\/]*', 'i')
 `
+	seedQ := `
+SELECT DISTINCT
+       SUBSTR(name, 1, REGEXP_INSTR(name, 'SYSTEM01\.DBF', 1, 1, 0, 'i') - 1)
+FROM   v$datafile
+WHERE  REGEXP_LIKE(name, '[\\/]{1}PDBSEED[\\/]{1}SYSTEM01\.DBF', 'i')
+`
+
 	fmt.Println("▶ Running root query (CDB$ROOT) against V$DATAFILE:")
 	fmt.Println(rootQ)
 
 	var rootDir string
-	if err := db.QueryRowContext(ctx, rootQ).Scan(&rootDir); err != nil {
+	ok, err := queryOne(db, ctx, rootQ, &rootDir)
+	if err != nil {
 		log.Fatalf("❌ Failed to fetch CDB$ROOT datafile directory: %v", err)
+	}
+	if !ok {
+		log.Fatalf("❌ No rows from root query; cannot determine CDB$ROOT datafile directory.")
 	}
 	rootDir = normalizeWindowsDir(rootDir)
 	fmt.Println("✓ Root query returned:\n  ", rootDir)
 
-	// Build seed dir from root
-	seedDir := normalizeWindowsDir(rootDir + "PDBSEED\\")
-	fmt.Println("\n📁 Derived PDBSEED directory:")
-	fmt.Println("  ", seedDir)
+	// Build expected seed from root
+	expectedSeed := normalizeWindowsDir(rootDir + "PDBSEED\\")
+	expectedSeedNorm := normalizeForCompare(expectedSeed)
 
-	// Generate PDB name from your helper
+	fmt.Println("\n▶ Running PDB$SEED query against V$DATAFILE:")
+	fmt.Println(seedQ)
+
+	var actualSeed string
+	found, err := queryOne(db, ctx, seedQ, &actualSeed)
+	if err != nil {
+		log.Fatalf("❌ Failed while checking PDB$SEED in V$DATAFILE: %v", err)
+	}
+	if !found {
+		log.Fatalf("❌ No rows from PDB$SEED query in V$DATAFILE.")
+	}
+	actualSeedNorm := normalizeForCompare(actualSeed)
+
+	fmt.Println("✓ PDB$SEED query returned:\n  ", actualSeed)
+	fmt.Println("\n▶ Comparing normalized paths:")
+	fmt.Println("  Expected:", expectedSeedNorm)
+	fmt.Println("  Actual:  ", actualSeedNorm)
+
+	if expectedSeedNorm != actualSeedNorm {
+		fmt.Println("❌ Error: Mismatch between expected and actual PDBSEED path.")
+		fmt.Println("🔎 Expected:", expectedSeedNorm)
+		fmt.Println("🔎 Actual:  ", actualSeedNorm)
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ Match: expected PDBSEED path equals actual PDBSEED path.")
+
+	// --- Create the PDB only after successful verification ---
+
+	// Generate PDB name
 	pdbName, err := date_time_functions.Generate_pdb_name_from_timestamp()
 	if err != nil {
 		log.Fatalf("❌ Failed to generate PDB name: %v", err)
@@ -101,28 +162,27 @@ WHERE  REGEXP_LIKE(name, 'SYSTEM01\.DBF', 'i')
 
 	// Destination dir for the new PDB
 	destDir := normalizeWindowsDir(rootDir + pdbName + `\`)
-	fmt.Println("\n📁 Destination directory for new PDB:")
-	fmt.Println("  ", destDir)
 
-	// Build and execute CREATE PLUGGABLE DATABASE
+	// Build CREATE statement
 	createSQL := fmt.Sprintf(
 		"CREATE PLUGGABLE DATABASE %s ADMIN USER %s IDENTIFIED BY %s FILE_NAME_CONVERT = ('%s', '%s')",
 		pdbName,
 		adminUser,
 		adminPassword,
-		strings.ReplaceAll(seedDir, `'`, `''`),
+		strings.ReplaceAll(expectedSeed, `'`, `''`),
 		strings.ReplaceAll(destDir, `'`, `''`),
 	)
 
 	fmt.Println("\n▶ About to execute:")
 	fmt.Println("  ", createSQL)
 
+	// Execute CREATE
 	if _, err := db.ExecContext(ctx, createSQL); err != nil {
 		log.Fatalf("❌ CREATE PLUGGABLE DATABASE failed: %v", err)
 	}
 
 	fmt.Println("\n✅ CREATE PLUGGABLE DATABASE executed successfully.")
 	fmt.Println("   PDB Name:  ", pdbName)
-	fmt.Println("   Seed From: ", seedDir)
+	fmt.Println("   Seed From: ", expectedSeed)
 	fmt.Println("   Files To:  ", destDir)
 }
