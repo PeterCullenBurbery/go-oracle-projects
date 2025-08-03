@@ -217,15 +217,16 @@ WHERE  REGEXP_LIKE(name, '[\\/]{1}PDBSEED[\\/]{1}SYSTEM01\.DBF', 'i')
 			if err := row.Scan(&name, &openMode); err == nil {
 				fmt.Println("🔎 PDB status:", name, openMode)
 			} else {
-				fmt.Println("ℹ️ Verification query returned no row or error:", err)
+				fmt.Println("⚠️ Verification query failed:", err)
+				os.Exit(1)
 			}
 			continue
 		}
 		if _, err := db.ExecContext(ctx, sqlText); err != nil {
 			fmt.Println("⚠️ Post-create step failed:", sqlText, "->", err)
-		} else {
-			fmt.Println("✓ Executed:", sqlText)
+			os.Exit(1)
 		}
+		fmt.Println("✓ Executed:", sqlText)
 	}
 
 	// --- Confirm saved state recorded (DBA_PDB_SAVED_STATES uses CON_NAME) ---
