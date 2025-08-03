@@ -227,4 +227,18 @@ WHERE  REGEXP_LIKE(name, '[\\/]{1}PDBSEED[\\/]{1}SYSTEM01\.DBF', 'i')
 			fmt.Println("✓ Executed:", sqlText)
 		}
 	}
+
+	// --- Confirm saved state recorded (DBA_PDB_SAVED_STATES uses CON_NAME) ---
+	q := fmt.Sprintf(`
+    SELECT state, restricted
+    FROM   dba_pdb_saved_states
+    WHERE  con_name = UPPER('%s')`, pdbName)
+
+	var state, restricted string
+	if err := db.QueryRowContext(ctx, q).Scan(&state, &restricted); err != nil {
+		// The view may be unavailable in some editions/privilege sets.
+		fmt.Println("ℹ️ Could not read DBA_PDB_SAVED_STATES (view may be unavailable):", err)
+	} else {
+		fmt.Printf("💾 Saved state recorded: STATE=%s, RESTRICTED=%s\n", state, restricted)
+	}
 }
