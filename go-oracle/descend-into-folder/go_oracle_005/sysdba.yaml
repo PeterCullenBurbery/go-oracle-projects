@@ -1,0 +1,6 @@
+oracle_connection:
+  username: sys
+  password: f
+  host: 192.168.198.169
+  port: 1521
+  service_name: orcl.localdomain
