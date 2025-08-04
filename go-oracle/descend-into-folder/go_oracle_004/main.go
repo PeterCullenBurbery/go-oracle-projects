@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 	_ "github.com/godror/godror"
@@ -35,6 +37,27 @@ func load_config(path string) (*config, error) {
 	return &cfg, nil
 }
 
+// allow Oracle identifier chars: letters, digits, '_', '#', '$' (common)
+var identOK = regexp.MustCompile(`^[A-Za-z0-9_#$]+$`)
+
+func buildCurrentSchemaClause(schema string) (string, error) {
+	if !identOK.MatchString(schema) {
+		return "", fmt.Errorf("invalid schema name %q", schema)
+	}
+	// If it contains any lowercase letters, assume it was created quoted and preserve case
+	if strings.ToLower(schema) != schema || strings.ToUpper(schema) != schema {
+		// mixed-case or lowercase supplied -> quote exactly
+		return fmt.Sprintf(`"%s"`, schema), nil
+	}
+	// pure uppercase or pure lowercase; if pure lowercase, unquoted will uppercase it.
+	// If your schema truly is quoted lowercase, set it exactly with quotes by passing it with any lowercase char.
+	if hasLower := strings.IndexFunc(schema, func(r rune) bool { return r >= 'a' && r <= 'z' }) >= 0; hasLower {
+		return fmt.Sprintf(`"%s"`, schema), nil
+	}
+	// default: unquoted (Oracle uppercases it)
+	return schema, nil
+}
+
 func main() {
 	const targetSchema = "pdb_2025_008_004_010_033_019"
 
@@ -57,7 +80,7 @@ func main() {
 
 	ctx := context.Background()
 
-	// Quick sanity check like your original program
+	// sanity checks
 	var dbname string
 	if err := db.QueryRowContext(ctx, "SELECT name FROM v$database").Scan(&dbname); err != nil {
 		log.Fatalf("❌ Query failed: %v", err)
@@ -70,13 +93,25 @@ func main() {
 	}
 	fmt.Printf("📅 SYSDATE: %s\n", sysdate)
 
-	// 1) Set current schema
-	if _, err := db.ExecContext(ctx, "ALTER SESSION SET CURRENT_SCHEMA = :1", targetSchema); err != nil {
-		log.Fatalf("❌ Failed to set CURRENT_SCHEMA: %v", err)
+	// Set CURRENT_SCHEMA (no bind here)
+	schemaClause, err := buildCurrentSchemaClause(targetSchema)
+	if err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+	alter := "ALTER SESSION SET CURRENT_SCHEMA = " + schemaClause
+	if _, err := db.ExecContext(ctx, alter); err != nil {
+		// Optional fallback: if unquoted failed with ORA-01918, try quoted
+		if !strings.Contains(err.Error(), "ORA-01918") && !strings.Contains(err.Error(), "ORA-00942") {
+			log.Fatalf("❌ Failed to set CURRENT_SCHEMA: %v", err)
+		}
+		altAlter := fmt.Sprintf(`ALTER SESSION SET CURRENT_SCHEMA = "%s"`, targetSchema)
+		if _, err2 := db.ExecContext(ctx, altAlter); err2 != nil {
+			log.Fatalf("❌ Failed to set CURRENT_SCHEMA (quoted fallback): %v", err2)
+		}
 	}
 	fmt.Printf("🔧 CURRENT_SCHEMA set to: %s\n", targetSchema)
 
-	// 2) Create or replace the function
+	// Create or replace the function
 	createFunc := `
 CREATE OR REPLACE FUNCTION get_timestamp
    RETURN TIMESTAMP WITH TIME ZONE
@@ -89,21 +124,20 @@ END get_timestamp`
 	}
 	fmt.Println("🛠️  Function get_timestamp created/replaced successfully.")
 
-	// 3) Verify current schema
+	// Verify current schema
 	var currentSchema string
 	if err := db.QueryRowContext(ctx, "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM dual").Scan(&currentSchema); err != nil {
 		log.Fatalf("❌ Failed to read CURRENT_SCHEMA: %v", err)
 	}
 	fmt.Printf("🧭 Active schema: %s\n", currentSchema)
 
-	// 4) Call the function and show result
+	// Call the function
 	var ts string
-	// Format the timestamp with timezone for a clean string result
 	if err := db.QueryRowContext(
 		ctx,
-		"SELECT TO_CHAR(get_timestamp, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF TZH:TZM') FROM dual",
+		"SELECT TO_CHAR(get_timestamp(), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF TZH:TZM') FROM dual",
 	).Scan(&ts); err != nil {
-		log.Fatalf("❌ Failed to call get_timestamp: %v", err)
+		log.Fatalf("❌ Failed to call get_timestamp(): %v", err)
 	}
 	fmt.Printf("⏱️  get_timestamp(): %s\n", ts)
 }
