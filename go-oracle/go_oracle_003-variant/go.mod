@@ -3,7 +3,7 @@ module go_oracle_003-variant
 go 1.24.4
 
 require (
-	github.com/PeterCullenBurbery/go_functions_002/v5 v5.3.0
+	github.com/PeterCullenBurbery/go_functions_002/v5 v5.4.0
 	github.com/goccy/go-yaml v1.18.0
 	github.com/godror/godror v0.49.1
 )

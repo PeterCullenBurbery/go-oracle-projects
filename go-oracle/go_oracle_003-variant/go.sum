@@ -1,5 +1,7 @@
 github.com/PeterCullenBurbery/go_functions_002/v5 v5.3.0 h1:96i5Au+1Zo3cy9jDChtq0Kdz8wE66So9GbYulZXrgYE=
 github.com/PeterCullenBurbery/go_functions_002/v5 v5.3.0/go.mod h1:cAl4JhWCy5jkUIXC8HmqLLsEobGBDkjRErH7JoskEW8=
+github.com/PeterCullenBurbery/go_functions_002/v5 v5.4.0 h1:ubDGsEEvNQYCPPhiprAFKRWxKBCrFWrlG7zwZVjYUkA=
+github.com/PeterCullenBurbery/go_functions_002/v5 v5.4.0/go.mod h1:zce8ghO8l9jPpVoOSnhbeDKLZeNvOLRWxrmGqVfyTqM=
 github.com/UNO-SOFT/zlog v0.8.1 h1:TEFkGJHtUfTRgMkLZiAjLSHALjwSBdw6/zByMC5GJt4=
 github.com/UNO-SOFT/zlog v0.8.1/go.mod h1:yqFOjn3OhvJ4j7ArJqQNA+9V+u6t9zSAyIZdWdMweWc=
 github.com/VictoriaMetrics/easyproto v0.1.4 h1:r8cNvo8o6sR4QShBXQd1bKw/VVLSQma/V2KhTBPf+Sc=
