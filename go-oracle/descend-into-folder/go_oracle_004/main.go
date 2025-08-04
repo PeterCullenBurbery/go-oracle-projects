@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
-	"strings"
 
 	"github.com/goccy/go-yaml"
 	_ "github.com/godror/godror"
@@ -37,36 +35,16 @@ func load_config(path string) (*config, error) {
 	return &cfg, nil
 }
 
-// allow Oracle identifier chars: letters, digits, '_', '#', '$' (common)
-var identOK = regexp.MustCompile(`^[A-Za-z0-9_#$]+$`)
-
-func buildCurrentSchemaClause(schema string) (string, error) {
-	if !identOK.MatchString(schema) {
-		return "", fmt.Errorf("invalid schema name %q", schema)
-	}
-	// If it contains any lowercase letters, assume it was created quoted and preserve case
-	if strings.ToLower(schema) != schema || strings.ToUpper(schema) != schema {
-		// mixed-case or lowercase supplied -> quote exactly
-		return fmt.Sprintf(`"%s"`, schema), nil
-	}
-	// pure uppercase or pure lowercase; if pure lowercase, unquoted will uppercase it.
-	// If your schema truly is quoted lowercase, set it exactly with quotes by passing it with any lowercase char.
-	if hasLower := strings.IndexFunc(schema, func(r rune) bool { return r >= 'a' && r <= 'z' }) >= 0; hasLower {
-		return fmt.Sprintf(`"%s"`, schema), nil
-	}
-	// default: unquoted (Oracle uppercases it)
-	return schema, nil
-}
-
 func main() {
-	const targetSchema = "pdb_2025_008_004_010_033_019"
+	// >>> change only this if you want a different PDB <<<
+	const target_container = "pdb_2025_008_004_010_033_019"
 
 	cfg, err := load_config("sysdba.yaml")
 	if err != nil {
 		log.Fatalf("❌ Failed to load config: %v", err)
 	}
-
 	oracle := cfg.Oracle_connection
+
 	dsn := fmt.Sprintf(
 		`user="%s" password="%s" connectString="%s:%d/%s" adminRole=SYSDBA`,
 		oracle.Username, oracle.Password, oracle.Host, oracle.Port, oracle.Service_name,
@@ -80,64 +58,45 @@ func main() {
 
 	ctx := context.Background()
 
-	// sanity checks
+	// Show CDB name (root)
 	var dbname string
 	if err := db.QueryRowContext(ctx, "SELECT name FROM v$database").Scan(&dbname); err != nil {
-		log.Fatalf("❌ Query failed: %v", err)
+		log.Fatalf("❌ Query failed (v$database): %v", err)
 	}
-	fmt.Printf("✅ Database name: %s\n", dbname)
+	fmt.Printf("✅ CDB name: %s\n", dbname)
 
-	var sysdate string
-	if err := db.QueryRowContext(ctx, "SELECT TO_CHAR(SYSDATE, 'YYYY-MM-DD HH24:MI:SS') FROM dual").Scan(&sysdate); err != nil {
-		log.Fatalf("❌ Query failed: %v", err)
-	}
-	fmt.Printf("📅 SYSDATE: %s\n", sysdate)
-
-	// Set CURRENT_SCHEMA (no bind here)
-	schemaClause, err := buildCurrentSchemaClause(targetSchema)
-	if err != nil {
-		log.Fatalf("❌ %v", err)
-	}
-	alter := "ALTER SESSION SET CURRENT_SCHEMA = " + schemaClause
+	// Switch container
+	alter := fmt.Sprintf("ALTER SESSION SET CONTAINER = %s", target_container)
 	if _, err := db.ExecContext(ctx, alter); err != nil {
-		// Optional fallback: if unquoted failed with ORA-01918, try quoted
-		if !strings.Contains(err.Error(), "ORA-01918") && !strings.Contains(err.Error(), "ORA-00942") {
-			log.Fatalf("❌ Failed to set CURRENT_SCHEMA: %v", err)
+		log.Fatalf("❌ Failed to alter session container to %s: %v", target_container, err)
+	}
+	fmt.Printf("🔁 Switched to PDB: %s\n", target_container)
+
+	// Confirm container
+	var con_name string
+	if err := db.QueryRowContext(ctx, "SELECT SYS_CONTEXT('USERENV','CON_NAME') FROM dual").Scan(&con_name); err != nil {
+		log.Fatalf("❌ Could not confirm container: %v", err)
+	}
+	fmt.Printf("📦 Current container: %s\n", con_name)
+
+	// List datafiles in this PDB
+	rows, err := db.QueryContext(ctx, "SELECT name FROM v$datafile ORDER BY name")
+	if err != nil {
+		log.Fatalf("❌ Query failed (v$datafile): %v", err)
+	}
+	defer rows.Close()
+
+	fmt.Println("📄 Datafiles:")
+	i := 0
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			log.Fatalf("❌ Row scan failed: %v", err)
 		}
-		altAlter := fmt.Sprintf(`ALTER SESSION SET CURRENT_SCHEMA = "%s"`, targetSchema)
-		if _, err2 := db.ExecContext(ctx, altAlter); err2 != nil {
-			log.Fatalf("❌ Failed to set CURRENT_SCHEMA (quoted fallback): %v", err2)
-		}
+		i++
+		fmt.Printf("  %2d) %s\n", i, name)
 	}
-	fmt.Printf("🔧 CURRENT_SCHEMA set to: %s\n", targetSchema)
-
-	// Create or replace the function
-	createFunc := `
-CREATE OR REPLACE FUNCTION get_timestamp
-   RETURN TIMESTAMP WITH TIME ZONE
-AS
-BEGIN
-   RETURN CURRENT_TIMESTAMP;
-END get_timestamp`
-	if _, err := db.ExecContext(ctx, createFunc); err != nil {
-		log.Fatalf("❌ Failed to create function: %v", err)
+	if err := rows.Err(); err != nil {
+		log.Fatalf("❌ Rows error: %v", err)
 	}
-	fmt.Println("🛠️  Function get_timestamp created/replaced successfully.")
-
-	// Verify current schema
-	var currentSchema string
-	if err := db.QueryRowContext(ctx, "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM dual").Scan(&currentSchema); err != nil {
-		log.Fatalf("❌ Failed to read CURRENT_SCHEMA: %v", err)
-	}
-	fmt.Printf("🧭 Active schema: %s\n", currentSchema)
-
-	// Call the function
-	var ts string
-	if err := db.QueryRowContext(
-		ctx,
-		"SELECT TO_CHAR(get_timestamp(), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF TZH:TZM') FROM dual",
-	).Scan(&ts); err != nil {
-		log.Fatalf("❌ Failed to call get_timestamp(): %v", err)
-	}
-	fmt.Printf("⏱️  get_timestamp(): %s\n", ts)
 }
