@@ -242,4 +242,30 @@ WHERE  REGEXP_LIKE(name, '[\\/]{1}PDBSEED[\\/]{1}SYSTEM01\.DBF', 'i')
 	} else {
 		fmt.Printf("💾 Saved state recorded: STATE=%s, RESTRICTED=%s\n", state, restricted)
 	}
+
+	// add:
+	fmt.Println("\n▶ Teardown: closing and dropping the new PDB")
+	teardown := []string{
+		fmt.Sprintf("ALTER PLUGGABLE DATABASE %s CLOSE IMMEDIATE", pdbName),
+		fmt.Sprintf("ALTER PLUGGABLE DATABASE %s DISCARD STATE", pdbName),
+		fmt.Sprintf("DROP PLUGGABLE DATABASE %s INCLUDING DATAFILES", pdbName),
+	}
+	for _, sqlText := range teardown {
+		if _, err := db.ExecContext(ctx, sqlText); err != nil {
+			fmt.Println("⚠️ Teardown step failed:", sqlText, "->", err)
+			os.Exit(1)
+		}
+		fmt.Println("✓ Executed:", sqlText)
+	}
+	verifyDrop := fmt.Sprintf("SELECT COUNT(*) FROM DBA_PDBS WHERE PDB_NAME = UPPER('%s')", pdbName)
+	var remaining int
+	if err := db.QueryRowContext(ctx, verifyDrop).Scan(&remaining); err != nil {
+		fmt.Println("⚠️ Could not verify PDB drop:", err)
+		os.Exit(1)
+	}
+	if remaining != 0 {
+		fmt.Printf("❌ Drop not confirmed: DBA_PDBS still shows %d row(s) for %s\n", remaining, pdbName)
+		os.Exit(1)
+	}
+	fmt.Println("🗑️ Drop confirmed: PDB removed from DBA_PDBS.")
 }
