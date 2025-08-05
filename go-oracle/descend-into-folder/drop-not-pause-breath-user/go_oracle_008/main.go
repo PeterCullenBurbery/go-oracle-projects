@@ -215,48 +215,45 @@ func is_identifier_too_long(err error) bool {
 }
 
 func create_java_source(ctx context.Context, db *sql.DB, owner string) error {
-	// Compile the Java source in the target user's schema
 	if _, err := db.ExecContext(ctx, "ALTER SESSION SET CURRENT_SCHEMA = "+owner); err != nil {
 		return fmt.Errorf("set current_schema failed: %w", err)
 	}
 
-	// Unquoted object name -> stored as uppercase GET_LOWER_CASE_VALUE
 	ddl := `CREATE OR REPLACE AND COMPILE JAVA SOURCE NAMED get_lower_case_value AS
 public class get_lower_case_value {
-    /**
-     * Return the input string in lowercase, or null if input is null.
-     */
     public static String get_lower_case_value(String s) {
         if (s == null) return null;
         return s.toLowerCase();
     }
 }`
-
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("compile Java source failed: %w", err)
 	}
 
-	// Verify compile status (we're in CURRENT_SCHEMA, so USER_OBJECTS is simplest)
+	ownerUpper := strings.ToUpper(owner)
+
+	// Verify using ALL_OBJECTS (not USER_OBJECTS)
 	var status string
-	err := db.QueryRowContext(ctx, `
-		SELECT status
-		FROM   user_objects
-		WHERE  object_type = 'JAVA SOURCE'
-		AND    object_name = 'GET_LOWER_CASE_VALUE'`,
-	).Scan(&status)
-	if err != nil {
+	q := `
+	  SELECT status
+	  FROM   all_objects
+	  WHERE  owner = :1
+	    AND  object_type = 'JAVA SOURCE'
+	    AND  UPPER(object_name) = 'GET_LOWER_CASE_VALUE'`
+	if err := db.QueryRowContext(ctx, q, ownerUpper).Scan(&status); err != nil {
 		return fmt.Errorf("verification query failed: %w", err)
 	}
 	fmt.Printf("🧩 Java source get_lower_case_value status: %s\n", status)
 
-	// If INVALID, print compiler errors to help diagnose
+	// If INVALID, dump compiler errors from ALL_ERRORS
 	if status == "INVALID" {
 		rows, err := db.QueryContext(ctx, `
-			SELECT line, position, text
-			FROM   user_errors
-			WHERE  type = 'JAVA SOURCE'
-			AND    name = 'GET_LOWER_CASE_VALUE'
-			ORDER  BY sequence`)
+		  SELECT line, position, text
+		  FROM   all_errors
+		  WHERE  owner = :1
+		    AND  type  = 'JAVA SOURCE'
+		    AND  name  = 'GET_LOWER_CASE_VALUE'
+		  ORDER BY sequence`, ownerUpper)
 		if err != nil {
 			return fmt.Errorf("failed to fetch compile errors: %w", err)
 		}
