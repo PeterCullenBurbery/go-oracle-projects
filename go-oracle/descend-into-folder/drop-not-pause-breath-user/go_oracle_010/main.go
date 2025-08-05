@@ -358,6 +358,7 @@ func dump_compile_errors(ctx context.Context, db *sql.DB, owner, obj_type, name 
 
 func create_java_source(ctx context.Context, db *sql.DB, owner, name, java_src string) error {
 	// Set the current schema to the user
+	// Set the current schema to ensure the object is owned by `owner`
 	if _, err := db.ExecContext(ctx, "ALTER SESSION SET CURRENT_SCHEMA = "+owner); err != nil {
 		return fmt.Errorf("set current_schema failed: %w", err)
 	}
