@@ -14,6 +14,11 @@ import (
 	_ "github.com/godror/godror"
 )
 
+const (
+	MAX_IDENTIFIER_LEN    = 128 // Oracle 12.2+
+	LEGACY_IDENTIFIER_LEN = 30  // pre-12.2 fallback
+)
+
 type oracle_config struct {
 	Username     string `yaml:"username"`
 	Password     string `yaml:"password"`
@@ -117,14 +122,33 @@ func main() {
 	fmt.Printf("📦 Current container: %s\n", con)
 
 	// 4) create user (with fallback on long identifier)
-	create_stmt := fmt.Sprintf("CREATE USER %s IDENTIFIED BY %s", username, password)
-	if _, err := db.ExecContext(ctx, create_stmt); err != nil {
+	createStmt := fmt.Sprintf("CREATE USER %s IDENTIFIED BY %s", username, password)
+	if _, err := db.ExecContext(ctx, createStmt); err != nil {
 		if is_identifier_too_long(err) {
-			short := truncate_identifier(username, 30)
-			fmt.Printf("⚠️ identifier too long; retrying with: %s\n", short)
-			username = short
-			if _, err2 := db.ExecContext(ctx, fmt.Sprintf("CREATE USER %s IDENTIFIED BY %s", username, password)); err2 != nil {
-				log.Fatalf("❌ CREATE USER failed even after truncation: %v", err2)
+			// First retry at 128
+			short := truncate_identifier(username, MAX_IDENTIFIER_LEN)
+			if short != username {
+				fmt.Printf("⚠️ identifier too long; retrying with: %s\n", short)
+				username = short
+				if _, err2 := db.ExecContext(ctx, fmt.Sprintf("CREATE USER %s IDENTIFIED BY %s", username, password)); err2 != nil {
+					// Optional legacy fallback (30) for pre-12.2 databases
+					if is_identifier_too_long(err2) {
+						legacy := truncate_identifier(username, LEGACY_IDENTIFIER_LEN)
+						if legacy != username {
+							fmt.Printf("⚠️ still too long; legacy retry with: %s\n", legacy)
+							username = legacy
+							if _, err3 := db.ExecContext(ctx, fmt.Sprintf("CREATE USER %s IDENTIFIED BY %s", username, password)); err3 != nil {
+								log.Fatalf("❌ CREATE USER failed after legacy fallback: %v", err3)
+							}
+						} else {
+							log.Fatalf("❌ CREATE USER failed after 128 and legacy attempts: %v", err2)
+						}
+					} else {
+						log.Fatalf("❌ CREATE USER failed after 128 attempt: %v", err2)
+					}
+				}
+			} else {
+				log.Fatalf("❌ CREATE USER failed (length unchanged): %v", err)
 			}
 		} else {
 			log.Fatalf("❌ CREATE USER failed: %v", err)
