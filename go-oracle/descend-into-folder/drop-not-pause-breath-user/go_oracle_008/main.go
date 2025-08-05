@@ -212,6 +212,10 @@ func main() {
 		log.Fatalf("❌ %v", err)
 	}
 
+	if err := create_plsql_wrapper(ctx, db, username); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+
 	// program exits
 }
 
@@ -300,5 +304,42 @@ public class get_lower_case_value {
 			return fmt.Errorf("java source GET_LOWER_CASE_VALUE is INVALID")
 		}
 	}
+	return nil
+}
+
+func create_plsql_wrapper(ctx context.Context, db *sql.DB, owner string) error {
+	// Compile the PL/SQL wrapper in the target schema
+	if _, err := db.ExecContext(ctx, "ALTER SESSION SET CURRENT_SCHEMA = "+owner); err != nil {
+		return fmt.Errorf("set current_schema failed: %w", err)
+	}
+
+	ddl := `
+CREATE OR REPLACE FUNCTION get_lower_case_value_pl(p_in VARCHAR2)
+  RETURN VARCHAR2 DETERMINISTIC
+AS LANGUAGE JAVA
+NAME 'get_lower_case_value.get_lower_case_value(java.lang.String) return java.lang.String'`
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create wrapper failed: %w", err)
+	}
+
+	// Verify creation
+	var status string
+	q := `
+	  SELECT status
+	  FROM   all_objects
+	  WHERE  owner = :1
+	    AND  object_type = 'FUNCTION'
+	    AND  object_name = 'GET_LOWER_CASE_VALUE_PL'`
+	if err := db.QueryRowContext(ctx, q, strings.ToUpper(owner)).Scan(&status); err != nil {
+		return fmt.Errorf("verify wrapper failed: %w", err)
+	}
+	fmt.Printf("🧩 PL/SQL wrapper GET_LOWER_CASE_VALUE_PL status: %s\n", status)
+
+	// Smoke test
+	var out sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT get_lower_case_value_pl('AbC') FROM dual`).Scan(&out); err != nil {
+		return fmt.Errorf("wrapper test call failed: %w", err)
+	}
+	fmt.Printf("🧪 get_lower_case_value_pl('AbC') -> %q\n", out.String)
 	return nil
 }
