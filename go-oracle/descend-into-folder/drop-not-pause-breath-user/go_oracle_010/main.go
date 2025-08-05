@@ -356,6 +356,24 @@ func dump_compile_errors(ctx context.Context, db *sql.DB, owner, obj_type, name 
 	return nil
 }
 
+// create_java_source compiles a Java source into the specified Oracle schema.
+//
+// Parameters:
+// - ctx:        a context for query execution
+// - db:         the database connection (assumed SYSDBA with proper container set)
+// - owner:      the Oracle schema to compile the Java source into
+// - name:       the name of the Java source object (used in "CREATE JAVA SOURCE NAMED ...")
+// - java_src:   the full Java class code (excluding the CREATE statement)
+//
+// Behavior:
+// - Sets CURRENT_SCHEMA to the target owner.
+// - Wraps the given Java source in a CREATE OR REPLACE AND COMPILE JAVA SOURCE statement.
+// - Executes the statement and verifies the resulting object status in ALL_OBJECTS.
+// - If compilation is INVALID, retrieves and prints compiler errors from ALL_ERRORS.
+//
+// Returns:
+// - nil on success
+// - error on failure (includes compile failure and verification errors)
 func create_java_source(ctx context.Context, db *sql.DB, owner, name, java_src string) error {
 	// Set the current schema to the user
 	// Set the current schema to ensure the object is owned by `owner`
