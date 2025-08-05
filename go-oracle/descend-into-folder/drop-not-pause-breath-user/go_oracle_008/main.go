@@ -317,23 +317,52 @@ func create_plsql_wrapper(ctx context.Context, db *sql.DB, owner string) error {
 CREATE OR REPLACE FUNCTION get_lower_case_value_pl(p_in VARCHAR2)
   RETURN VARCHAR2 DETERMINISTIC
 AS LANGUAGE JAVA
-NAME 'get_lower_case_value.get_lower_case_value(java.lang.String) return java.lang.String'`
+NAME 'get_lower_case_value.get_lower_case_value(java.lang.String) return java.lang.String';` // <-- semicolon added
+
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("create wrapper failed: %w", err)
 	}
 
 	// Verify creation
 	var status string
-	q := `
-	  SELECT status
-	  FROM   all_objects
-	  WHERE  owner = :1
-	    AND  object_type = 'FUNCTION'
-	    AND  object_name = 'GET_LOWER_CASE_VALUE_PL'`
-	if err := db.QueryRowContext(ctx, q, strings.ToUpper(owner)).Scan(&status); err != nil {
+	if err := db.QueryRowContext(ctx, `
+		SELECT status
+		FROM   all_objects
+		WHERE  owner = :1
+		  AND  object_type = 'FUNCTION'
+		  AND  object_name = 'GET_LOWER_CASE_VALUE_PL'`,
+		strings.ToUpper(owner),
+	).Scan(&status); err != nil {
 		return fmt.Errorf("verify wrapper failed: %w", err)
 	}
 	fmt.Printf("🧩 PL/SQL wrapper GET_LOWER_CASE_VALUE_PL status: %s\n", status)
+
+	// If INVALID, show errors
+	if status == "INVALID" {
+		rows, err := db.QueryContext(ctx, `
+			SELECT line, position, text
+			FROM   all_errors
+			WHERE  owner = :1
+			  AND  type  = 'FUNCTION'
+			  AND  name  = 'GET_LOWER_CASE_VALUE_PL'
+			ORDER BY sequence`, strings.ToUpper(owner))
+		if err != nil {
+			return fmt.Errorf("failed to fetch wrapper errors: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var line, pos int
+			var text string
+			if err := rows.Scan(&line, &pos, &text); err != nil {
+				return err
+			}
+			fmt.Printf("❌ [%d:%d] %s\n", line, pos, text)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("wrapper is INVALID")
+	}
 
 	// Smoke test
 	var out sql.NullString
