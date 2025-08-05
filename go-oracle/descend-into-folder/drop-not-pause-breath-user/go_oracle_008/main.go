@@ -136,16 +136,6 @@ func main() {
 	}
 	fmt.Printf("🎉 Created user: %s (password: %s)\n", username, password)
 
-	// ensure cleanup
-	defer func() {
-		drop_stmt := fmt.Sprintf("DROP USER %s CASCADE", username)
-		if _, err := db.ExecContext(ctx, drop_stmt); err != nil {
-			fmt.Printf("⚠️ drop user failed (manual cleanup may be required): %v\n", err)
-			return
-		}
-		fmt.Printf("🗑️ Dropped user: %s\n", username)
-	}()
-
 	// 5) load YAML lists
 	roles, err := load_roles(roles_yaml_path)
 	if err != nil {
@@ -194,7 +184,11 @@ func main() {
 	}
 	fmt.Printf("📊 system privileges granted OK=%d, failed=%d\n", ok_count, fail_count)
 
-	// program exits -> deferred drop runs
+	if err := create_java_source(ctx, db, username); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+
+	// program exits
 }
 
 // ---- helpers (snake_case) ----
@@ -218,4 +212,43 @@ func truncate_identifier(s string, max int) string {
 
 func is_identifier_too_long(err error) bool {
 	return strings.Contains(strings.ToUpper(err.Error()), "ORA-00972")
+}
+
+func create_java_source(ctx context.Context, db *sql.DB, owner string) error {
+	// make DDL run in the target schema
+	if _, err := db.ExecContext(ctx, "ALTER SESSION SET CURRENT_SCHEMA = "+owner); err != nil {
+		return fmt.Errorf("set current_schema failed: %w", err)
+	}
+
+	ddl := `CREATE OR REPLACE AND COMPILE JAVA SOURCE NAMED "get_lower_case_value" AS
+import java.io.*;
+
+public class get_lower_case_value {
+    /**
+     * Return the input string in lowercase, or null if input is null.
+     */
+    public static String get_lower_case_value(String s) {
+        if (s == null) {
+            return null;
+        }
+        return s.toLowerCase();
+    }
+}`
+
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("compile Java source failed: %w", err)
+	}
+
+	// verify compile status
+	var status string
+	q := `SELECT status
+	       FROM all_objects
+	       WHERE owner = :1
+	         AND object_type = 'JAVA SOURCE'
+	         AND object_name = 'GET_LOWER_CASE_VALUE'`
+	if err := db.QueryRowContext(ctx, q, owner).Scan(&status); err != nil {
+		return fmt.Errorf("verification query failed: %w", err)
+	}
+	fmt.Printf("🧩 Java source get_lower_case_value status: %s\n", status)
+	return nil
 }
