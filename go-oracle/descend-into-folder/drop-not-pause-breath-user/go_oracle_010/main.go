@@ -208,6 +208,43 @@ func main() {
 	}
 	fmt.Printf("📊 system privileges granted OK=%d, failed=%d\n", ok_count, fail_count)
 
+	java_src_hash_of_input := `
+import java.io.*;
+import java.sql.*;
+import java.security.*;
+
+public class hash_of_input {
+    public static String hash_of_input(Clob clob) throws Exception {
+        if (clob == null) {
+            return null;
+        }
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        Reader reader = clob.getCharacterStream();
+        char[] buffer = new char[8192];
+        int read;
+        while ((read = reader.read(buffer)) != -1) {
+            byte[] bytes = new String(buffer, 0, read).getBytes("UTF-8");
+            md.update(bytes);
+        }
+        reader.close();
+        byte[] digest = md.digest();
+        StringBuilder sb = new StringBuilder(digest.length * 2);
+        for (byte b : digest) {
+            sb.append(String.format("%02x", b & 0xff));
+        }
+        return sb.toString();
+    }
+}`
+
+if err := create_java_source(
+	ctx, db, username,
+	"hash_of_input",
+	java_src_hash_of_input,
+); err != nil {
+	log.Fatalf("❌ %v", err)
+}
+
+
 	ddl_get_ts := `
 CREATE OR REPLACE FUNCTION get_timestamp
    RETURN TIMESTAMP WITH TIME ZONE
