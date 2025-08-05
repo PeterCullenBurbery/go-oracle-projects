@@ -215,22 +215,19 @@ func is_identifier_too_long(err error) bool {
 }
 
 func create_java_source(ctx context.Context, db *sql.DB, owner string) error {
-	// make DDL run in the target schema
+	// Compile the Java source in the target user's schema
 	if _, err := db.ExecContext(ctx, "ALTER SESSION SET CURRENT_SCHEMA = "+owner); err != nil {
 		return fmt.Errorf("set current_schema failed: %w", err)
 	}
 
-	ddl := `CREATE OR REPLACE AND COMPILE JAVA SOURCE NAMED "get_lower_case_value" AS
-import java.io.*;
-
+	// Unquoted object name -> stored as uppercase GET_LOWER_CASE_VALUE
+	ddl := `CREATE OR REPLACE AND COMPILE JAVA SOURCE NAMED get_lower_case_value AS
 public class get_lower_case_value {
     /**
      * Return the input string in lowercase, or null if input is null.
      */
     public static String get_lower_case_value(String s) {
-        if (s == null) {
-            return null;
-        }
+        if (s == null) return null;
         return s.toLowerCase();
     }
 }`
@@ -239,16 +236,48 @@ public class get_lower_case_value {
 		return fmt.Errorf("compile Java source failed: %w", err)
 	}
 
-	// verify compile status
+	// Verify compile status (we're in CURRENT_SCHEMA, so USER_OBJECTS is simplest)
 	var status string
-	q := `SELECT status
-	       FROM all_objects
-	       WHERE owner = :1
-	         AND object_type = 'JAVA SOURCE'
-	         AND object_name = 'GET_LOWER_CASE_VALUE'`
-	if err := db.QueryRowContext(ctx, q, owner).Scan(&status); err != nil {
+	err := db.QueryRowContext(ctx, `
+		SELECT status
+		FROM   user_objects
+		WHERE  object_type = 'JAVA SOURCE'
+		AND    object_name = 'GET_LOWER_CASE_VALUE'`,
+	).Scan(&status)
+	if err != nil {
 		return fmt.Errorf("verification query failed: %w", err)
 	}
 	fmt.Printf("🧩 Java source get_lower_case_value status: %s\n", status)
+
+	// If INVALID, print compiler errors to help diagnose
+	if status == "INVALID" {
+		rows, err := db.QueryContext(ctx, `
+			SELECT line, position, text
+			FROM   user_errors
+			WHERE  type = 'JAVA SOURCE'
+			AND    name = 'GET_LOWER_CASE_VALUE'
+			ORDER  BY sequence`)
+		if err != nil {
+			return fmt.Errorf("failed to fetch compile errors: %w", err)
+		}
+		defer rows.Close()
+
+		had := false
+		for rows.Next() {
+			var line, pos int
+			var text string
+			if err := rows.Scan(&line, &pos, &text); err != nil {
+				return err
+			}
+			fmt.Printf("❌ [%d:%d] %s\n", line, pos, text)
+			had = true
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if had {
+			return fmt.Errorf("java source GET_LOWER_CASE_VALUE is INVALID")
+		}
+	}
 	return nil
 }
